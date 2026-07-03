@@ -55,7 +55,7 @@ export class Hand {
       armGroup.rotateZ(0.7); // roll so a flat face, not an edge, faces the camera
       armGroup.position.set(0.09, -0.04, 0.26);
       this.group.add(armGroup);
-    } else if (stack.id < 100) {
+    } else if (stack.id < 100 && !BLOCKS[stack.id].cross) {
       // held block as a mini cube
       const def = BLOCKS[stack.id];
       const geo = new THREE.BoxGeometry(0.42, 0.42, 0.42);

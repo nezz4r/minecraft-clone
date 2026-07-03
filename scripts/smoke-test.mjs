@@ -114,21 +114,21 @@ console.log('ok: meshing');
   assert.strictEqual(inv.hotbar[1].count, 11);
 
   const planksRecipe = RECIPES.find((r) => r.out === B.PLANKS);
-  assert.ok(canCraft(planksRecipe, inv, false));
-  craft(planksRecipe, inv, false);
+  assert.ok(canCraft(planksRecipe, inv, 2));
+  craft(planksRecipe, inv, 2);
   assert.strictEqual(inv.countOf(B.LOG), 74);
   assert.strictEqual(inv.countOf(B.PLANKS), 4);
 
   // pickaxe needs table
   const stickRecipe = RECIPES.find((r) => r.out === 100);
-  craft(stickRecipe, inv, false);
+  craft(stickRecipe, inv, 2);
   const woodPick = RECIPES.find((r) => r.out === 101);
-  assert.ok(!canCraft(woodPick, inv, false), 'pickaxe blocked without table');
+  assert.ok(!canCraft(woodPick, inv, 2), 'pickaxe blocked without table (2x2 grid)');
   // craft more planks so we have 3 + the table cost
-  craft(planksRecipe, inv, false);
-  craft(planksRecipe, inv, false);
-  assert.ok(canCraft(woodPick, inv, true), 'pickaxe ok with table');
-  craft(woodPick, inv, true);
+  craft(planksRecipe, inv, 2);
+  craft(planksRecipe, inv, 2);
+  assert.ok(canCraft(woodPick, inv, 3), 'pickaxe ok with a 3x3 grid');
+  craft(woodPick, inv, 3);
   assert.strictEqual(inv.countOf(101), 1);
 
   inv.remove(B.LOG, 100);

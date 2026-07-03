@@ -174,14 +174,14 @@ console.log('ok: death + respawn');
   inv.add(B.PLANKS, 10);
   inv.add(I.STICK, 6);
   const byOut = (id) => RECIPES.find((r) => r.out === id);
-  assert.ok(canCraft(byOut(B.STONE_BRICKS), inv, false), 'stone bricks craftable without table');
-  craft(byOut(B.STONE_BRICKS), inv, false);
+  assert.ok(canCraft(byOut(B.STONE_BRICKS), inv, 2), 'stone bricks craftable in the 2x2 grid');
+  craft(byOut(B.STONE_BRICKS), inv, 2);
   assert.strictEqual(inv.countOf(B.STONE_BRICKS), 4);
   for (const id of [I.WOODEN_SWORD, I.STONE_SWORD, I.WOODEN_AXE, I.STONE_AXE, I.WOODEN_SHOVEL, I.STONE_SHOVEL]) {
-    assert.ok(!canCraft(byOut(id), inv, false), `${id} needs table`);
-    assert.ok(canCraft(byOut(id), inv, true), `${id} craftable with table`);
+    assert.ok(!canCraft(byOut(id), inv, 2), `${id} needs a 3x3 grid`);
+    assert.ok(canCraft(byOut(id), inv, 3), `${id} craftable at a table`);
   }
-  craft(byOut(I.STONE_SWORD), inv, true);
+  craft(byOut(I.STONE_SWORD), inv, 3);
   assert.strictEqual(inv.countOf(I.STONE_SWORD), 1);
   assert.ok(ITEMS[I.STONE_SWORD].damage > ITEMS[I.WOODEN_SWORD].damage - 2, 'sword damage defined');
 }
@@ -199,21 +199,24 @@ console.log('ok: v2 recipes');
 }
 console.log('ok: tool speed system');
 
-// --- tier gating ---
+// --- tier gating: under-tier breaks are very slow and drop nothing (like MC) ---
 {
   const inv = new Inventory();
-  const speedWith = (blockId, itemId) => {
+  const withItem = (itemId) => {
     inv.hotbar[0] = itemId ? { id: itemId, count: 1 } : null;
     inv.selected = 0;
-    return player.mineSpeedFor(blockId, inv);
+    return inv;
   };
-  assert.strictEqual(speedWith(B.STONE, null), 0, 'bare hand cannot mine stone');
-  assert.ok(speedWith(B.STONE, I.WOODEN_PICKAXE) > 0, 'wooden pick mines stone');
-  assert.strictEqual(speedWith(B.IRON_ORE, I.WOODEN_PICKAXE), 0, 'wooden pick cannot mine iron ore');
-  assert.ok(speedWith(B.IRON_ORE, I.STONE_PICKAXE) > 0, 'stone pick mines iron ore');
-  assert.strictEqual(speedWith(B.DIAMOND_ORE, I.STONE_PICKAXE), 0, 'stone pick cannot mine diamond ore');
-  assert.ok(speedWith(B.DIAMOND_ORE, I.IRON_PICKAXE) > 0, 'iron pick mines diamond ore');
-  assert.strictEqual(speedWith(B.DIAMOND_ORE, I.GOLD_PICKAXE), 0, 'gold pick is wood-tier for gating');
+  const speedWith = (blockId, itemId) => player.mineSpeedFor(blockId, withItem(itemId));
+
+  assert.ok(player.underTier(B.STONE, withItem(null)), 'bare hand is under-tier for stone');
+  assert.ok(speedWith(B.STONE, null) < speedWith(B.STONE, I.WOODEN_PICKAXE) / 5, 'hand-breaking stone is punishingly slow');
+  assert.ok(!player.underTier(B.STONE, withItem(I.WOODEN_PICKAXE)), 'wooden pick mines stone properly');
+  assert.ok(player.underTier(B.IRON_ORE, withItem(I.WOODEN_PICKAXE)), 'wooden pick under-tier for iron ore');
+  assert.ok(!player.underTier(B.IRON_ORE, withItem(I.STONE_PICKAXE)), 'stone pick mines iron ore');
+  assert.ok(player.underTier(B.DIAMOND_ORE, withItem(I.STONE_PICKAXE)), 'stone pick under-tier for diamond ore');
+  assert.ok(!player.underTier(B.DIAMOND_ORE, withItem(I.IRON_PICKAXE)), 'iron pick mines diamond ore');
+  assert.ok(player.underTier(B.DIAMOND_ORE, withItem(I.GOLD_PICKAXE)), 'gold pick is wood-tier for gating');
   assert.ok(speedWith(B.STONE, I.GOLD_PICKAXE) > speedWith(B.STONE, I.DIAMOND_PICKAXE), 'gold pick fastest on stone');
 }
 console.log('ok: tier gating');
@@ -269,15 +272,55 @@ console.log('ok: furnace smelting');
   inv.add(I.STICK, 8);
   const byOut = (id) => RECIPES.find((r) => r.out === id);
   assert.ok(byOut(I.IRON_PICKAXE) && byOut(I.GOLD_SWORD) && byOut(I.DIAMOND_SHOVEL), 'tier recipes exist');
-  assert.ok(canCraft(byOut(I.IRON_PICKAXE), inv, true), 'iron pickaxe craftable');
-  craft(byOut(I.IRON_PICKAXE), inv, true);
+  assert.ok(canCraft(byOut(I.IRON_PICKAXE), inv, 3), 'iron pickaxe craftable');
+  craft(byOut(I.IRON_PICKAXE), inv, 3);
   assert.strictEqual(inv.countOf(I.IRON_PICKAXE), 1);
   assert.strictEqual(inv.countOf(I.IRON_INGOT), 0);
-  assert.ok(canCraft(byOut(I.DIAMOND_SWORD), inv, true), 'diamond sword craftable');
+  assert.ok(canCraft(byOut(I.DIAMOND_SWORD), inv, 3), 'diamond sword craftable');
   assert.ok(ITEMS[I.DIAMOND_SWORD].damage > ITEMS[I.IRON_SWORD].damage, 'diamond sword strongest');
-  const furnaceRecipe = byOut(B.FURNACE);
-  assert.ok(furnaceRecipe && furnaceRecipe.cost[0][1] === 8, 'furnace costs 8 cobblestone');
+  const { ingredientTotals } = await import('../src/inventory.js');
+  const furnaceCost = ingredientTotals(byOut(B.FURNACE));
+  assert.strictEqual(furnaceCost.get(B.COBBLESTONE), 8, 'furnace costs 8 cobblestone');
 }
 console.log('ok: tier recipes');
+
+// --- grid matching (shaped, mirrored, shapeless) ---
+{
+  const { matchGrid, consumeGrid } = await import('../src/inventory.js');
+  const P = B.PLANKS, S = I.STICK, C = B.COBBLESTONE;
+  const st = (id) => ({ id, count: 1 });
+
+  // 2x2: crafting table from 4 planks
+  let cells = [st(P), st(P), st(P), st(P)];
+  assert.strictEqual(matchGrid(cells, 2)?.out, B.CRAFTING_TABLE, '2x2 table match');
+
+  // sticks: vertical planks pair, any column
+  cells = [null, st(P), null, st(P)];
+  assert.strictEqual(matchGrid(cells, 2)?.out, I.STICK, 'sticks match offset column');
+
+  // 3x3: wooden pickaxe shape
+  cells = [st(P), st(P), st(P), null, st(S), null, null, st(S), null];
+  const pick = matchGrid(cells, 3);
+  assert.strictEqual(pick?.out, I.WOODEN_PICKAXE, 'pickaxe shape matches');
+
+  // axe mirrored: ['MM','MS',' S'] mirrored -> ['MM','SM','S ']
+  cells = [st(C), st(C), null, st(S), st(C), null, st(S), null, null];
+  assert.strictEqual(matchGrid(cells, 3)?.out, I.STONE_AXE, 'mirrored axe matches');
+
+  // wrong shape: pickaxe top row moved down must NOT match
+  cells = [null, null, null, st(P), st(P), st(P), null, st(S), null];
+  assert.notStrictEqual(matchGrid(cells, 3)?.out, I.WOODEN_PICKAXE, 'wrong shape rejected');
+
+  // shapeless: single log anywhere -> planks
+  cells = [null, null, null, null, st(B.LOG), null, null, null, null];
+  assert.strictEqual(matchGrid(cells, 3)?.out, B.PLANKS, 'shapeless log -> planks');
+
+  // consumeGrid: one item eaten per occupied cell
+  cells = [{ id: P, count: 2 }, st(P), st(P), st(P)];
+  consumeGrid(cells);
+  assert.strictEqual(cells[0].count, 1, 'stacked cell decremented');
+  assert.strictEqual(cells[1], null, 'single-item cell emptied');
+}
+console.log('ok: grid matching');
 
 console.log('\nAll gameplay tests passed.');

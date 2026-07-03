@@ -22,10 +22,11 @@ export class DropManager {
     this.atlas = atlasTexture;
     this.drops = [];
     this.blockMat = new THREE.MeshLambertMaterial({ map: atlasTexture, alphaTest: 0.5 });
+    this.onPickup = null;
   }
 
   makeMesh(id) {
-    if (id < 100) {
+    if (id < 100 && !BLOCKS[id].cross) {
       const geo = new THREE.BoxGeometry(0.26, 0.26, 0.26);
       if (hasDOM || this.atlas) setBoxTileUVs(geo, BLOCKS[id].tiles);
       return new THREE.Mesh(geo, this.blockMat);
@@ -90,6 +91,7 @@ export class DropManager {
 
         if (dist < PICKUP_RADIUS) {
           const leftover = inventory.add(d.id, d.count);
+          if (leftover < d.count && this.onPickup) this.onPickup();
           if (leftover > 0) d.count = leftover;
           else this.remove(i);
           continue;

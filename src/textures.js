@@ -6,7 +6,7 @@ import { B, I, T, BLOCKS, ITEMS } from './blocks.js';
 
 export const TILE = 16;
 export const ATLAS_COLS = 8;
-export const ATLAS_ROWS = 4;
+export const ATLAS_ROWS = 5;
 
 function px(ctx, x, y, r, g, b, a = 1) {
   ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${a})`;
@@ -182,31 +182,51 @@ const painters = {
   },
 };
 
-// Mining crack overlays: 4 stages of transparent tiles with cracks radiating
-// from the center. Stored after the block tiles in the atlas.
-export const CRACK_BASE = 19;
-export const CRACK_STAGES = 4;
+// Mining crack overlays, Minecraft style: cracks radiate outward from the
+// center, and every stage is strictly cumulative - stage n+1 shows the exact
+// same cracks as stage n, extended further plus a few new branches.
+export const CRACK_BASE = 35;
+export const CRACK_STAGES = 5;
+
+// one master set of crack strokes, shared by all stages
+const CRACK_STROKES = (() => {
+  const rng = mulberry32(0xc4ac);
+  const strokes = [];
+  for (let i = 0; i < 12; i++) {
+    // spread start angles evenly so cracks fan out from the middle
+    const ang = (i / 12) * Math.PI * 2 + (rng() - 0.5) * 0.6;
+    let x = 7.5 + (rng() - 0.5) * 2;
+    let y = 7.5 + (rng() - 0.5) * 2;
+    let dx = Math.cos(ang), dy = Math.sin(ang);
+    const pts = [];
+    for (let s = 0; s < 11; s++) {
+      pts.push([Math.round(x), Math.round(y)]);
+      x += dx * (0.7 + rng() * 0.6);
+      y += dy * (0.7 + rng() * 0.6);
+      const turn = (rng() - 0.5) * 0.8; // wander, but keep heading outward
+      const ndx = dx * Math.cos(turn) - dy * Math.sin(turn);
+      dy = dx * Math.sin(turn) + dy * Math.cos(turn);
+      dx = ndx;
+      if (x < 0 || x > 15 || y < 0 || y > 15) break;
+    }
+    strokes.push(pts);
+  }
+  return strokes;
+})();
 
 function crackPainter(stage) {
-  return (ctx, ox, oy, rng) => {
+  return (ctx, ox, oy) => {
     ctx.clearRect(ox, oy, TILE, TILE);
-    ctx.fillStyle = 'rgba(20,20,20,0.85)';
-    const lines = 3 + stage * 2;
-    for (let i = 0; i < lines; i++) {
-      let x = 7 + rng() * 2, y = 7 + rng() * 2;
-      const ang = rng() * Math.PI * 2;
-      let dx = Math.cos(ang), dy = Math.sin(ang);
-      const steps = 3 + stage * 3 + rng() * 4;
-      for (let s = 0; s < steps; s++) {
-        ctx.fillRect(ox + (x | 0), oy + (y | 0), 1, 1);
-        x += dx * (0.6 + rng() * 0.8);
-        y += dy * (0.6 + rng() * 0.8);
-        // jitter direction so cracks wander
-        const turn = (rng() - 0.5) * 1.2;
-        const ndx = dx * Math.cos(turn) - dy * Math.sin(turn);
-        dy = dx * Math.sin(turn) + dy * Math.cos(turn);
-        dx = ndx;
-        if (x < 0 || x > 15 || y < 0 || y > 15) break;
+    ctx.fillStyle = 'rgba(15,15,15,0.9)';
+    const t = (stage + 1) / CRACK_STAGES;
+    // more strokes appear as the stage rises...
+    const strokeCount = Math.max(3, Math.round(CRACK_STROKES.length * t));
+    for (let i = 0; i < strokeCount; i++) {
+      const pts = CRACK_STROKES[i];
+      // ...and existing strokes creep outward from the center
+      const len = Math.max(2, Math.round(pts.length * (0.35 + 0.65 * t)));
+      for (let s = 0; s < len && s < pts.length; s++) {
+        ctx.fillRect(ox + pts[s][0], oy + pts[s][1], 1, 1);
       }
     }
   };
@@ -214,6 +234,44 @@ function crackPainter(stage) {
 for (let s = 0; s < CRACK_STAGES; s++) {
   painters[CRACK_BASE + s] = crackPainter(s);
 }
+
+// ---------- cross plants (tall grass, flowers) ----------
+
+painters[T.TALL_GRASS] = (ctx, ox, oy, rng) => {
+  ctx.clearRect(ox, oy, TILE, TILE);
+  for (let i = 0; i < 13; i++) {
+    const bx = 1 + rng() * 13;
+    const h = 7 + rng() * 8;
+    const lean = (rng() - 0.5) * 4;
+    const g = 0.75 + rng() * 0.4;
+    ctx.fillStyle = `rgb(${88 * g | 0},${150 * g | 0},${56 * g | 0})`;
+    for (let s = 0; s < h; s++) {
+      const x = bx + lean * (s / h);
+      // blades are 2px wide near the ground, 1px at the tip
+      ctx.fillRect(ox + (x | 0), oy + 15 - s, s < h * 0.45 ? 2 : 1, 1);
+    }
+  }
+};
+
+function flowerPainter(petal, center) {
+  return (ctx, ox, oy, rng) => {
+    ctx.clearRect(ox, oy, TILE, TILE);
+    // stem with a leaf
+    ctx.fillStyle = 'rgb(62,120,40)';
+    for (let s = 0; s < 8; s++) ctx.fillRect(ox + 7, oy + 15 - s, 1, 1);
+    ctx.fillRect(ox + 5, oy + 11, 2, 1);
+    ctx.fillRect(ox + 5, oy + 10, 1, 1);
+    // petals in a plus shape around the head
+    ctx.fillStyle = petal;
+    ctx.fillRect(ox + 6, oy + 3, 3, 3);
+    ctx.fillRect(ox + 5, oy + 4, 5, 1);
+    ctx.fillRect(ox + 7, oy + 2, 1, 5);
+    ctx.fillStyle = center;
+    ctx.fillRect(ox + 7, oy + 4, 1, 1);
+  };
+}
+painters[T.FLOWER_YELLOW] = flowerPainter('rgb(240,214,50)', 'rgb(190,140,20)');
+painters[T.FLOWER_RED] = flowerPainter('rgb(216,50,40)', 'rgb(40,40,40)');
 
 painters[T.WOOL] = (ctx, ox, oy, rng) => {
   noisyFill(ctx, ox, oy, [232, 232, 232], 0.05, rng);
@@ -507,11 +565,21 @@ function itemIcon(itemId) {
   return c.toDataURL();
 }
 
+// cross blocks (plants) use their tile directly as a flat icon
+function flatTileIcon(blockId) {
+  const c = document.createElement('canvas');
+  c.width = 48; c.height = 48;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tileToCanvas(BLOCKS[blockId].tiles.side), 0, 0, 48, 48);
+  return c.toDataURL();
+}
+
 const iconCache = new Map();
 
 export function iconFor(id) {
   if (iconCache.has(id)) return iconCache.get(id);
-  const url = id >= 100 ? itemIcon(id) : cubeIcon(id);
+  const url = id >= 100 ? itemIcon(id) : (BLOCKS[id].cross ? flatTileIcon(id) : cubeIcon(id));
   iconCache.set(id, url);
   return url;
 }

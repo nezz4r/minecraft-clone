@@ -9,7 +9,9 @@ import { Sky } from './sky.js';
 import { MobManager } from './mobs.js';
 import { DropManager } from './drops.js';
 import { FurnaceManager } from './furnace.js';
-import { B, ITEMS, BARE_HAND_DAMAGE, displayName } from './blocks.js';
+import { GameAudio } from './audio.js';
+import { ParticleManager } from './particles.js';
+import { B, BLOCKS, ITEMS, BARE_HAND_DAMAGE, displayName } from './blocks.js';
 
 // ---------- renderer / scene ----------
 
@@ -40,6 +42,8 @@ const sky = new Sky(scene);
 const drops = new DropManager(scene, world, atlas);
 const mobs = new MobManager(scene, world, drops);
 const furnaces = new FurnaceManager();
+const audio = new GameAudio();
+const particles = new ParticleManager(scene, world, atlas);
 const hand = new Hand(atlas, window.innerWidth / window.innerHeight);
 
 // starter kit
@@ -47,6 +51,8 @@ inventory.add(B.PLANKS, 16);
 
 // mined blocks pop out as floating drops; broken furnaces spill their contents
 player.onBlockMined = (id, x, y, z, blockId, bx, by, bz) => {
+  audio.breakBlock(blockId);
+  particles.burst(blockId, bx + 0.5, by + 0.5, bz + 0.5);
   drops.spawn(id, 1, x, y, z);
   if (blockId === B.FURNACE) {
     for (const stack of furnaces.breakAt(bx, by, bz)) {
@@ -55,21 +61,47 @@ player.onBlockMined = (id, x, y, z, blockId, bx, by, bz) => {
   }
 };
 
-// right-clicking a furnace opens its UI
+// ---------- sound hooks ----------
+player.onDigTick = (blockId) => {
+  audio.dig(blockId);
+  if (player.mineTarget) {
+    const [tx, ty, tz] = player.mineTarget;
+    particles.hit(blockId, tx + 0.5, ty + 0.5, tz + 0.5);
+  }
+};
+drops.onPickup = () => audio.pop();
+mobs.onMobSound = (type, event, pos) => audio.mob(type, event, pos);
+ui.onSound = (name) => (name === 'craft' ? audio.craft() : audio.click());
+
+let stepAccum = 0;
+let wasInWater = false;
+let lastStepPos = null;
+let waterTickAccum = 0;
+
+// right-clicking a furnace or crafting table opens its screen
 player.onInteract = (blockId, [x, y, z]) => {
-  if (blockId !== B.FURNACE) return false;
-  ui.openFurnace(furnaces.at(x, y, z));
-  document.exitPointerLock();
-  return true;
+  if (blockId === B.FURNACE) {
+    ui.openFurnace(furnaces.at(x, y, z));
+    document.exitPointerLock();
+    return true;
+  }
+  if (blockId === B.CRAFTING_TABLE) {
+    ui.openTable();
+    document.exitPointerLock();
+    return true;
+  }
+  return false;
 };
 
 // damage feedback + death flow
 const damageVignette = document.getElementById('damage-vignette');
 player.onHurt = () => {
+  audio.hurt();
   damageVignette.style.opacity = 1;
   setTimeout(() => { damageVignette.style.opacity = 0; }, 130);
 };
 player.onDeath = () => {
+  audio.death();
   // scatter the whole inventory where we died
   for (const stack of inventory.clearAll()) {
     drops.spawn(stack.id, stack.count, player.pos.x, player.pos.y + 1, player.pos.z);
@@ -98,35 +130,75 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 scene.add(highlight);
 
-// mining crack overlay: textured cube using crack stage tiles from the atlas
-const crackGeo = new THREE.BoxGeometry(1.002, 1.002, 1.002);
-const crackBox = new THREE.Mesh(
-  crackGeo,
+// Mining crack overlay: thin quads laid over only the *exposed* faces of the
+// target block (like MC), rebuilt when the target or crack stage changes.
+const crackMesh = new THREE.Mesh(
+  new THREE.BufferGeometry(),
   new THREE.MeshBasicMaterial({
     map: atlas, transparent: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   })
 );
-crackBox.visible = false;
-scene.add(crackBox);
+crackMesh.visible = false;
+crackMesh.renderOrder = 2;
+scene.add(crackMesh);
 
-let crackStage = -1;
-function setCrackStage(stage) {
-  if (stage === crackStage) return;
-  crackStage = stage;
-  const idx = CRACK_BASE + Math.min(stage, CRACK_STAGES - 1);
+let crackKey = '';
+const CRACK_FACES = [
+  { dir: [1, 0, 0], corners: [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1]] },
+  { dir: [-1, 0, 0], corners: [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]] },
+  { dir: [0, 1, 0], corners: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]] },
+  { dir: [0, -1, 0], corners: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
+  { dir: [0, 0, 1], corners: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
+  { dir: [0, 0, -1], corners: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] },
+];
+
+function updateCrackOverlay(target, progress) {
+  if (!target || progress <= 0) {
+    crackMesh.visible = false;
+    crackKey = '';
+    return;
+  }
+  const stage = Math.min(CRACK_STAGES - 1, Math.floor(progress * CRACK_STAGES));
+  const [bx, by, bz] = target;
+  const key = bx + ',' + by + ',' + bz + ':' + stage;
+  if (key === crackKey) {
+    crackMesh.visible = true;
+    return;
+  }
+  crackKey = key;
+
+  const idx = CRACK_BASE + stage;
   const cx = idx % ATLAS_COLS, cy = Math.floor(idx / ATLAS_COLS);
   const u0 = cx / ATLAS_COLS, u1 = (cx + 1) / ATLAS_COLS;
   const v1 = 1 - cy / ATLAS_ROWS, v0 = 1 - (cy + 1) / ATLAS_ROWS;
-  const uv = crackGeo.getAttribute('uv');
-  for (let f = 0; f < 6; f++) {
-    const o = f * 4;
-    uv.setXY(o + 0, u0, v1);
-    uv.setXY(o + 1, u1, v1);
-    uv.setXY(o + 2, u0, v0);
-    uv.setXY(o + 3, u1, v0);
+  const uvs = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+
+  const pos = [], uv = [], index = [];
+  const EPS = 0.002;
+  for (const face of CRACK_FACES) {
+    const nb = world.getBlock(bx + face.dir[0], by + face.dir[1], bz + face.dir[2]);
+    const nbDef = BLOCKS[nb];
+    if (nbDef && nbDef.opaque) continue; // buried face, never visible
+    const vi = pos.length / 3;
+    for (let i = 0; i < 4; i++) {
+      const [ox, oy, oz] = face.corners[i];
+      pos.push(
+        bx + ox + face.dir[0] * EPS + (ox - 0.5) * EPS,
+        by + oy + face.dir[1] * EPS + (oy - 0.5) * EPS,
+        bz + oz + face.dir[2] * EPS + (oz - 0.5) * EPS
+      );
+      uv.push(uvs[i][0], uvs[i][1]);
+    }
+    index.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
   }
-  uv.needsUpdate = true;
+  crackMesh.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(index);
+  crackMesh.geometry = g;
+  crackMesh.visible = true;
 }
 
 // ---------- input ----------
@@ -175,9 +247,11 @@ async function tryFullscreen() {
 }
 
 playBtn.addEventListener('click', () => {
+  audio.resume();
   tryFullscreen();
   tryLock();
 });
+document.addEventListener('mousedown', () => audio.resume(), { once: true });
 
 // clicking the game (or the pause overlay) re-locks the pointer
 canvas.addEventListener('click', () => {
@@ -232,10 +306,12 @@ function tryAttack() {
   if (!hit) return;
   attackCooldown = 0.35;
   hand.swingOnce();
+  audio.attackSwing();
   const held = inventory.heldItem();
   const dmg = (held && ITEMS[held.id] && ITEMS[held.id].damage) || BARE_HAND_DAMAGE;
   const knock = new THREE.Vector3(hit.mob.pos.x - player.pos.x, 0, hit.mob.pos.z - player.pos.z).normalize();
   hit.mob.hurt(dmg, knock);
+  audio.mob(hit.mob.type, 'hurt', hit.mob.pos);
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -255,7 +331,7 @@ document.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ControlLeft', 'ControlRight',
-  'ShiftLeft', 'ShiftRight', 'KeyE', 'F3',
+  'ShiftLeft', 'ShiftRight', 'KeyE', 'KeyM', 'KeyQ', 'F3',
   'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
 ]);
 
@@ -268,7 +344,7 @@ document.addEventListener('keydown', (e) => {
 
   if (e.code === 'Escape') {
     if (ui.open && started) {
-      ui.toggle(false);
+      ui.close();
       tryLock();
     } else if (locked) {
       document.exitPointerLock(); // pause menu shows via pointerlockchange
@@ -277,8 +353,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE' && started) {
     e.preventDefault();
-    const nearTable = isTableNearby();
-    const open = ui.toggle(nearTable);
+    const open = ui.toggle();
     if (open) {
       document.exitPointerLock();
     } else {
@@ -286,7 +361,29 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (ui.open) return;
+  if (ui.open) {
+    // inventory-screen shortcuts
+    if (e.code === 'KeyQ') {
+      e.preventDefault();
+      ui.dropHovered(e.ctrlKey);
+    }
+    if (e.code.startsWith('Digit')) {
+      const n = Number(e.code.slice(5));
+      if (n >= 1 && n <= 9) ui.digitSwap(n - 1);
+    }
+    return;
+  }
+  // Q while playing: toss one of the held item (Ctrl+Q for the whole stack)
+  if (e.code === 'KeyQ' && locked) {
+    const sel = inventory.heldItem();
+    if (sel) {
+      const n = e.ctrlKey ? sel.count : 1;
+      throwDrop({ id: sel.id, count: n });
+      sel.count -= n;
+      if (sel.count <= 0) inventory.hotbar[inventory.selected] = null;
+      inventory.changed();
+    }
+  }
   // double-tap W = sprint (so Ctrl is never required)
   if (e.code === 'KeyW' && !e.repeat) {
     const now = performance.now();
@@ -297,6 +394,9 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'F3') {
     e.preventDefault();
     debugVisible = !debugVisible;
+  }
+  if (e.code === 'KeyM') {
+    audio.setMuted(!audio.muted);
   }
   if (e.code.startsWith('Digit')) {
     const n = Number(e.code.slice(5));
@@ -317,17 +417,15 @@ document.addEventListener('wheel', (e) => {
   ui.refresh();
 });
 
-function isTableNearby() {
-  const px = Math.floor(player.pos.x), py = Math.floor(player.pos.y), pz = Math.floor(player.pos.z);
-  for (let y = -2; y <= 2; y++) {
-    for (let z = -3; z <= 3; z++) {
-      for (let x = -3; x <= 3; x++) {
-        if (world.getBlock(px + x, py + y, pz + z) === B.CRAFTING_TABLE) return true;
-      }
-    }
-  }
-  return false;
+// throw a stack into the world in front of the player
+function throwDrop(stack) {
+  const dir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(player.pitch, player.yaw, 0, 'YXZ'));
+  const d = drops.spawn(stack.id, stack.count,
+    player.pos.x + dir.x, player.pos.y + 1.4 + dir.y * 0.5, player.pos.z + dir.z, false);
+  d.vel.set(dir.x * 5, 2.5 + dir.y * 3, dir.z * 5);
+  audio.pop();
 }
+ui.onDropItem = (stack) => throwDrop(stack);
 
 // ---------- boot: pregenerate spawn area ----------
 
@@ -359,7 +457,7 @@ let lastDaylight = 1;
 
 // hooks for automated testing / console tinkering
 window.__game = {
-  player, world, inventory, sky, mobs, ui, drops, furnaces,
+  player, world, inventory, sky, mobs, ui, drops, furnaces, audio,
   get fps() { return fps; },
   forceLocked(v) { forceLockedFlag = v; },
 };
@@ -388,9 +486,16 @@ function loop(now) {
   }
 
   world.update(player.pos.x, player.pos.z, 2);
+  // water simulation ticks 4x per second
+  waterTickAccum += dt;
+  if (waterTickAccum >= 0.25) {
+    waterTickAccum = 0;
+    world.tickWater();
+  }
   mobs.update(dt, player, lastDaylight);
   drops.update(dt, player, inventory);
   furnaces.update(dt);
+  particles.update(dt, camera);
   lastDaylight = sky.update(dt, renderer, camera.position).daylight;
   ui.updateStatus(player);
   ui.updateFurnaceBars();
@@ -400,16 +505,10 @@ function loop(now) {
   if (hit) {
     highlight.visible = true;
     highlight.position.set(hit.block[0] + 0.5, hit.block[1] + 0.5, hit.block[2] + 0.5);
-    if (player.mineTarget && player.mineProgress > 0) {
-      crackBox.visible = true;
-      crackBox.position.copy(highlight.position);
-      setCrackStage(Math.floor(player.mineProgress * CRACK_STAGES));
-    } else {
-      crackBox.visible = false;
-    }
+    updateCrackOverlay(player.mineTarget, player.mineProgress);
   } else {
     highlight.visible = false;
-    crackBox.visible = false;
+    updateCrackOverlay(null, 0);
   }
 
   // underwater tint
@@ -419,6 +518,30 @@ function loop(now) {
   if (player.justPlaced) {
     player.justPlaced = false;
     hand.swingOnce();
+    if (player.justAte) {
+      player.justAte = false;
+      audio.eat();
+    } else {
+      audio.place(player.lastPlacedId);
+    }
+  }
+
+  // footsteps: one tap roughly every 2.2 blocks walked on the ground
+  audio.updateListener(player.pos.x, player.pos.z, player.yaw);
+  if (isPlaying) {
+    if (lastStepPos) {
+      const walked = Math.hypot(player.pos.x - lastStepPos.x, player.pos.z - lastStepPos.z);
+      if (player.onGround && !player.inWater) {
+        stepAccum += walked;
+        if (stepAccum > 2.2) {
+          stepAccum = 0;
+          audio.step(world.getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y - 0.01), Math.floor(player.pos.z)));
+        }
+      }
+    }
+    lastStepPos = { x: player.pos.x, z: player.pos.z };
+    if (player.inWater && !wasInWater) audio.splash();
+    wasInWater = player.inWater;
   }
   const moving = isPlaying && (player.keys['KeyW'] || player.keys['KeyA'] || player.keys['KeyS'] || player.keys['KeyD']) && player.onGround;
   hand.update(dt, {

@@ -25,6 +25,9 @@ export const B = {
   IRON_BLOCK: 21,
   GOLD_BLOCK: 22,
   DIAMOND_BLOCK: 23,
+  TALL_GRASS: 24,
+  FLOWER_YELLOW: 25,
+  FLOWER_RED: 26,
 };
 
 export const I = {
@@ -88,6 +91,9 @@ export const T = {
   IRON_BLOCK: 29,
   GOLD_BLOCK: 30,
   DIAMOND_BLOCK: 31,
+  TALL_GRASS: 32,
+  FLOWER_YELLOW: 33,
+  FLOWER_RED: 34,
 };
 
 // hardness = seconds to mine by hand.
@@ -129,13 +135,14 @@ export const BLOCKS = {
   [B.LEAVES]: {
     name: 'Oak Leaves', solid: true, opaque: true, hardness: 0.3,
     tiles: { top: T.LEAVES, bottom: T.LEAVES, side: T.LEAVES },
+    drops: null, // like MC: breaking leaves gives nothing
   },
   [B.PLANKS]: {
     name: 'Oak Planks', solid: true, opaque: true, hardness: 3.0, tool: 'axe',
     tiles: { top: T.PLANKS, bottom: T.PLANKS, side: T.PLANKS },
   },
   [B.WATER]: {
-    name: 'Water', solid: false, opaque: false, hardness: Infinity,
+    name: 'Water', solid: false, opaque: false, hardness: Infinity, water: true, level: 8,
     tiles: { top: T.WATER, bottom: T.WATER, side: T.WATER },
   },
   [B.CRAFTING_TABLE]: {
@@ -192,6 +199,20 @@ export const BLOCKS = {
     name: 'Diamond Block', solid: true, opaque: true, hardness: 5, tool: 'pick', minTier: 3,
     tiles: { top: T.DIAMOND_BLOCK, bottom: T.DIAMOND_BLOCK, side: T.DIAMOND_BLOCK },
   },
+  // cross: true renders as two crossed quads (plants); walk-through, instant break
+  [B.TALL_GRASS]: {
+    name: 'Grass', solid: false, opaque: false, hardness: 0.05, cross: true,
+    tiles: { top: T.TALL_GRASS, bottom: T.TALL_GRASS, side: T.TALL_GRASS },
+    drops: null,
+  },
+  [B.FLOWER_YELLOW]: {
+    name: 'Dandelion', solid: false, opaque: false, hardness: 0.05, cross: true,
+    tiles: { top: T.FLOWER_YELLOW, bottom: T.FLOWER_YELLOW, side: T.FLOWER_YELLOW },
+  },
+  [B.FLOWER_RED]: {
+    name: 'Poppy', solid: false, opaque: false, hardness: 0.05, cross: true,
+    tiles: { top: T.FLOWER_RED, bottom: T.FLOWER_RED, side: T.FLOWER_RED },
+  },
 };
 
 // Material tiers. tier = pick gating level, speed = mining multiplier.
@@ -236,6 +257,34 @@ for (const [tierKey, t] of Object.entries(TIERS)) {
 }
 
 export const BARE_HAND_DAMAGE = 2;
+
+// ---------- flowing water ----------
+// B.WATER (10) is a source (level 8). Flowing water uses ids 27-33 for
+// levels 1-7; level determines spread distance and rendered surface height.
+
+const FLOW_BASE = 26; // + level (1..7)
+
+for (let level = 1; level <= 7; level++) {
+  BLOCKS[FLOW_BASE + level] = {
+    name: 'Water', solid: false, opaque: false, hardness: Infinity, water: true, level,
+    tiles: { top: T.WATER, bottom: T.WATER, side: T.WATER },
+  };
+}
+
+export function isWater(id) {
+  return id === B.WATER || (id > FLOW_BASE && id <= FLOW_BASE + 7);
+}
+
+// 0 = not water, 1-7 = flowing, 8 = source
+export function waterLevel(id) {
+  if (id === B.WATER) return 8;
+  if (id > FLOW_BASE && id <= FLOW_BASE + 7) return id - FLOW_BASE;
+  return 0;
+}
+
+export function flowId(level) {
+  return FLOW_BASE + Math.max(1, Math.min(7, level));
+}
 
 export function isSolid(id) {
   const b = BLOCKS[id];

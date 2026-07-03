@@ -3,7 +3,7 @@
 // flash, and loot drops on death.
 
 import * as THREE from 'three';
-import { B, I, isSolid } from './blocks.js';
+import { B, I, isSolid, isWater } from './blocks.js';
 import { HEIGHT } from './world.js';
 import { hash2 } from './noise.js';
 
@@ -78,6 +78,7 @@ class Mob {
     this.heading = Math.random() * Math.PI * 2;
     this.state = 'idle';
     this.stateTimer = 1 + Math.random() * 3;
+    this.voiceTimer = 2 + Math.random() * 8;
     this.hp = this.def.hp;
     this.halfW = this.def.halfW;
     this.height = this.def.height;
@@ -226,6 +227,7 @@ export class MobManager {
     this.drops = drops;
     this.mobs = [];
     this.spawnTimer = 0;
+    this.onMobSound = null; // (type, event, pos) => void
   }
 
   count(hostile) {
@@ -248,7 +250,7 @@ export class MobManager {
     while (y > 1 && !isSolid(this.world.getBlock(x, y, z))) y--;
     const ground = this.world.getBlock(x, y, z);
     if (!hostile && ground !== B.GRASS) return;
-    if (hostile && (ground === B.WATER || ground === B.AIR)) return;
+    if (hostile && (isWater(ground) || ground === B.AIR)) return;
     if (this.world.getBlock(x, y + 1, z) !== B.AIR || this.world.getBlock(x, y + 2, z) !== B.AIR) return;
 
     const type = hostile ? 'zombie' : (hash2(x, z, 991) < 0.5 ? 'pig' : 'sheep');
@@ -285,6 +287,7 @@ export class MobManager {
   }
 
   killMob(mob) {
+    if (this.onMobSound) this.onMobSound(mob.type, 'death', mob.pos);
     // loot pops out where the mob died
     for (const d of mob.def.drops) {
       const n = d.min + Math.floor(Math.random() * (d.max - d.min + 1));
@@ -323,7 +326,15 @@ export class MobManager {
         this.mobs.splice(i, 1);
         continue;
       }
-      if (d2 < 55 * 55) m.update(dt, this.world, player);
+      if (d2 < 55 * 55) {
+        m.update(dt, this.world, player);
+        // occasional ambient voice when close to the player
+        m.voiceTimer -= dt;
+        if (m.voiceTimer <= 0) {
+          m.voiceTimer = (m.def.hostile ? 3 : 6) + Math.random() * 8;
+          if (d2 < 20 * 20 && this.onMobSound) this.onMobSound(m.type, 'ambient', m.pos);
+        }
+      }
     }
   }
 }

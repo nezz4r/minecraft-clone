@@ -124,6 +124,10 @@ html, body {
   background: rgba(0,0,0,0.45);
   display: flex; align-items: center; justify-content: center;
 }
+#screen-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  max-height: 94vh;
+}
 #inventory-panel {
   background: #c6c6c6;
   border: 3px solid;
@@ -134,7 +138,6 @@ html, body {
   max-height: 92vh; overflow-y: auto;
 }
 .inv-title { color: #3f3f3f; font-size: 10px; margin-bottom: 8px; }
-#table-status { color: #7a6a00; font-size: 8px; }
 .slot-grid { display: grid; grid-template-columns: repeat(9, 44px); gap: 2px; }
 .inv-slot {
   width: 44px; height: 44px;
@@ -156,14 +159,93 @@ html, body {
 #held-stack img { width: 32px; height: 32px; image-rendering: pixelated; }
 #held-stack .slot-count { font-size: 10px; }
 
-/* ---------- crafting ---------- */
-#craft-list { display: flex; flex-direction: column; gap: 4px; max-width: 460px; }
-.craft-category {
-  color: #5a4a2a; font-size: 9px;
-  margin: 8px 0 2px;
-  border-bottom: 2px solid #8b8b8b;
-  padding-bottom: 3px;
+/* ---------- crafting grid ---------- */
+#craft-wrap { display: flex; align-items: center; gap: 14px; }
+#craft-grid { display: grid; gap: 2px; }
+#craft-grid.size2 { grid-template-columns: repeat(2, 44px); }
+#craft-grid.size3 { grid-template-columns: repeat(3, 44px); }
+#craft-arrow {
+  width: 44px; height: 16px;
+  background: #6b6b6b;
+  clip-path: polygon(0 30%, 62% 30%, 62% 0, 100% 50%, 62% 100%, 62% 70%, 0 70%);
 }
+.result-slot { width: 52px !important; height: 52px !important; }
+.result-slot.has-result { background: #9db98a; }
+.result-slot .slot-icon { width: 40px; height: 40px; }
+
+/* ---------- recipe book ---------- */
+#recipe-book {
+  background: #b08c60;
+  border: 3px solid;
+  border-color: #d8b88a #6a4e2c #6a4e2c #d8b88a;
+  border-radius: 3px;
+  padding: 12px;
+  box-shadow: 0 0 0 3px #000, 0 12px 40px rgba(0,0,0,0.6);
+  width: 296px;
+  max-height: 92vh;
+  display: flex; flex-direction: column;
+}
+#recipe-tabs { display: flex; gap: 3px; margin-bottom: 8px; flex-wrap: wrap; }
+.recipe-tab {
+  font-size: 8px; color: #fff;
+  background: #8a6a42;
+  border: 2px solid;
+  border-color: #6a4e2c #d8b88a #d8b88a #6a4e2c;
+  padding: 5px 7px;
+  cursor: pointer;
+  text-shadow: 1px 1px 0 #3f3f3f;
+}
+.recipe-tab.active {
+  background: #c6c6c6; color: #3f3f3f;
+  border-color: #fff #555 #555 #fff;
+  text-shadow: none;
+}
+#recipe-entries {
+  display: grid;
+  grid-template-columns: repeat(5, 50px);
+  gap: 4px;
+  overflow-y: auto;
+  padding: 2px;
+  min-height: 120px;
+}
+.recipe-entry {
+  width: 50px; height: 50px;
+  background: #8b6a44;
+  border: 2px solid;
+  border-color: #6a4e2c #d8b88a #d8b88a #6a4e2c;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.recipe-entry.craftable { opacity: 1; background: #7d9c5f; }
+.recipe-entry.needs-table { opacity: 0.7; }
+.recipe-entry:hover { outline: 2px solid #fff; }
+.recipe-entry .slot-icon { width: 34px; height: 34px; }
+.recipe-entry .slot-count {
+  right: 2px; bottom: 1px; font-size: 9px;
+}
+#recipe-hint {
+  margin-top: 8px;
+  font-size: 7px; color: #f5e6cc;
+  line-height: 1.8;
+  text-shadow: 1px 1px 0 #3f3f3f;
+}
+
+/* ---------- tooltip ---------- */
+#tooltip {
+  position: fixed; z-index: 50;
+  pointer-events: none;
+  background: rgba(16, 0, 16, 0.94);
+  border: 2px solid #26025a;
+  border-radius: 2px;
+  padding: 7px 9px;
+  color: #fff; font-size: 9px;
+  line-height: 1.9;
+  max-width: 240px;
+}
+#tooltip .tt-sub { color: #a8a8a8; font-size: 8px; }
+#tooltip .tt-missing { color: #ff8080; }
 
 /* ---------- furnace ---------- */
 #furnace-ui {
@@ -197,20 +279,6 @@ html, body {
   background: #fff;
   width: 0%;
 }
-.craft-row {
-  display: flex; align-items: center; gap: 10px;
-  background: #8b8b8b;
-  border: 2px solid;
-  border-color: #373737 #fff #fff #373737;
-  padding: 5px 8px;
-  cursor: pointer;
-}
-.craft-row:hover:not(.disabled) { background: #a8d08d; }
-.craft-row.disabled { opacity: 0.45; cursor: not-allowed; }
-.craft-row .slot-icon { width: 28px; height: 28px; flex: none; }
-.craft-name { color: #2a2a2a; font-size: 9px; flex: 1; }
-.craft-cost { color: #4a4a4a; font-size: 8px; text-align: right; line-height: 1.6; }
-
 /* ---------- title / pause overlay ---------- */
 #overlay {
   position: absolute; inset: 0; z-index: 40;

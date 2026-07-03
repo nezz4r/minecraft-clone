@@ -37,37 +37,48 @@
   <div id="water-overlay"></div>
 
   <div id="inventory-screen" class="hidden">
-    <div id="inventory-panel">
-      <div class="inv-title">Inventory</div>
-      <div id="inv-main" class="slot-grid"></div>
-      <div class="inv-title" style="margin-top:10px">Hotbar</div>
-      <div id="inv-hotbar" class="slot-grid"></div>
-      <div id="craft-section">
-        <div class="inv-title" style="margin-top:14px">Crafting <span id="table-status"></span></div>
-        <div id="craft-list"></div>
+    <div id="screen-row">
+      <div id="recipe-book">
+        <div id="recipe-tabs"></div>
+        <div id="recipe-entries"></div>
+        <div id="recipe-hint">Click: fill grid &nbsp;·&nbsp; Shift: craft &nbsp;·&nbsp; Right: craft all</div>
       </div>
-      <div id="furnace-section" class="hidden">
-        <div class="inv-title" style="margin-top:14px">Furnace</div>
-        <div id="furnace-ui">
-          <div class="furnace-col">
-            <div class="furnace-label">Input</div>
-            <div id="furnace-in" class="inv-slot"></div>
-            <div id="flame-bar"><div id="flame-fill"></div></div>
-            <div id="furnace-fuel" class="inv-slot"></div>
-            <div class="furnace-label">Fuel</div>
-          </div>
-          <div class="furnace-col">
-            <div id="smelt-arrow"><div id="smelt-fill"></div></div>
-          </div>
-          <div class="furnace-col">
-            <div class="furnace-label">Output</div>
-            <div id="furnace-out" class="inv-slot"></div>
+      <div id="inventory-panel">
+        <div id="craft-section">
+          <div class="inv-title" id="craft-title">Crafting</div>
+          <div id="craft-wrap">
+            <div id="craft-grid"></div>
+            <div id="craft-arrow"></div>
+            <div id="craft-result" class="inv-slot result-slot"></div>
           </div>
         </div>
+        <div id="furnace-section" class="hidden">
+          <div class="inv-title">Furnace</div>
+          <div id="furnace-ui">
+            <div class="furnace-col">
+              <div class="furnace-label">Input</div>
+              <div id="furnace-in" class="inv-slot"></div>
+              <div id="flame-bar"><div id="flame-fill"></div></div>
+              <div id="furnace-fuel" class="inv-slot"></div>
+              <div class="furnace-label">Fuel</div>
+            </div>
+            <div class="furnace-col">
+              <div id="smelt-arrow"><div id="smelt-fill"></div></div>
+            </div>
+            <div class="furnace-col">
+              <div class="furnace-label">Output</div>
+              <div id="furnace-out" class="inv-slot"></div>
+            </div>
+          </div>
+        </div>
+        <div class="inv-title" style="margin-top:12px">Inventory</div>
+        <div id="inv-main" class="slot-grid"></div>
+        <div id="inv-hotbar" class="slot-grid" style="margin-top:8px"></div>
       </div>
     </div>
   </div>
   <div id="held-stack" class="hidden"></div>
+  <div id="tooltip" class="hidden"></div>
 
   <div id="overlay">
     <div id="overlay-inner">
@@ -77,7 +88,7 @@
       <div id="controls-help" class="hidden">
         <p>WASD move &nbsp;·&nbsp; SPACE jump &nbsp;·&nbsp; double-tap W or CTRL sprint</p>
         <p>LEFT CLICK mine &nbsp;·&nbsp; RIGHT CLICK place</p>
-        <p>E inventory &amp; crafting &nbsp;·&nbsp; 1-9 / wheel select &nbsp;·&nbsp; F3 debug</p>
+        <p>E inventory &amp; crafting &nbsp;·&nbsp; 1-9 / wheel select &nbsp;·&nbsp; M mute &nbsp;·&nbsp; F3 debug</p>
       </div>
     </div>
   </div>

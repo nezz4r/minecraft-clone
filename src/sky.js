@@ -16,8 +16,8 @@ export class Sky {
     this.ambient = new THREE.AmbientLight(0xffffff, 0.55);
     scene.add(this.ambient);
 
-    // matched to render distance (6 chunks = 96 blocks) to hide chunk pop-in
-    scene.fog = new THREE.Fog(0x87ceeb, 52, 92);
+    // matched to render distance (8 chunks = 128 blocks) to hide chunk pop-in
+    scene.fog = new THREE.Fog(0x87ceeb, 72, 124);
 
     // sun: square sprite, MC-style
     const sunTex = this.makeSquareTexture([255, 240, 150], [255, 220, 80]);

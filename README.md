@@ -4,7 +4,8 @@ A browser-based Minecraft clone built from scratch with [Three.js](https://three
 
 ## Features
 
-- Infinite procedurally generated world (hills, mountains, caves, ores, trees, lakes) with chunk streaming
+- Infinite procedurally generated world (hills, mountains, caves, ores, trees, lakes) with chunk streaming,
+  plus tall grass and flowers (dandelions/poppies) scattered across the plains
 - Break and place blocks with hold-to-mine timing, block hardness, and tool speed bonuses (pickaxe/axe/shovel)
 - Five tool tiers (wood, stone, iron, gold, diamond) with Minecraft-style pick gating:
   stone needs a wooden pick, iron ore a stone pick, gold/diamond ore an iron pick; gold tools are fastest but weak
@@ -17,6 +18,8 @@ A browser-based Minecraft clone built from scratch with [Three.js](https://three
 - First-person controller: walking, sprinting (FOV kick), jumping, swimming; first-person hand/held item
 - Day/night cycle with sun, moon, stars, drifting clouds, dusk tints, and matched fog
 - 31 recipes in a categorized crafting screen; transparent glass, stone bricks, and iron/gold/diamond blocks
+- Fully procedural sound (WebAudio synthesis, no audio files): digging/breaking/placing per material,
+  footsteps, splashes, hurt/death, eating, item-pickup pop, UI clicks, and positional mob voices
 - Baked ambient occlusion, per-face directional shading, F3 debug overlay
 
 ## Run
@@ -41,6 +44,7 @@ Then open the printed URL (default http://localhost:5173).
 | On recipe: shift or right click | Craft as many as possible |
 | 1-9 / wheel | Select hotbar slot |
 | E | Inventory & crafting |
+| M | Mute / unmute sound |
 | F3 | Debug overlay |
 | Esc | Pause / release mouse |
 

@@ -2,11 +2,11 @@
 // voxel raycast for mining/placing with hold-to-mine timing.
 
 import * as THREE from 'three';
-import { B, BLOCKS, ITEMS, isSolid } from './blocks.js';
+import { B, BLOCKS, ITEMS, isSolid, isWater } from './blocks.js';
 import { HEIGHT, SEA_LEVEL } from './world.js';
 
 const GRAVITY = 26;
-const JUMP_SPEED = 8.6;
+const JUMP_SPEED = 8.1; // v^2/2g = 1.26 blocks, matching MC's 1.25 jump
 const WALK_SPEED = 4.3;
 const SPRINT_SPEED = 6.1;
 const WATER_SPEED = 2.6;
@@ -28,6 +28,8 @@ export class Player {
     this.headInWater = false;
     this.sprinting = false;
     this.sprintToggle = false;
+    this.bobPhase = 0;
+    this.bobAmount = 0; // eases in/out with movement
 
     this.keys = {};
 
@@ -53,6 +55,10 @@ export class Player {
     this.onDeath = null;
     this.onBlockMined = null; // (dropId, x, y, z, blockId, bx, by, bz) => void
     this.onInteract = null;   // (blockId, [x,y,z]) => bool; true = handled (e.g. furnace UI)
+    this.onDigTick = null;    // (blockId) => void, fires repeatedly while mining
+    this.digTickTimer = 0;
+    this.lastPlacedId = 0;    // block id of the most recent placement
+    this.justAte = false;
   }
 
   damage(n, opts = {}) {
@@ -168,8 +174,8 @@ export class Player {
     // water state
     const feet = this.world.getBlock(Math.floor(this.pos.x), Math.floor(this.pos.y + 0.2), Math.floor(this.pos.z));
     const head = this.world.getBlock(Math.floor(this.pos.x), Math.floor(this.pos.y + EYE_HEIGHT), Math.floor(this.pos.z));
-    this.inWater = feet === B.WATER || head === B.WATER;
-    this.headInWater = head === B.WATER;
+    this.inWater = isWater(feet) || isWater(head);
+    this.headInWater = isWater(head);
 
     // input direction in world space
     const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
@@ -236,9 +242,16 @@ export class Player {
       }
     }
 
-    // camera
-    this.camera.position.set(this.pos.x, this.pos.y + EYE_HEIGHT, this.pos.z);
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    // camera with walking view-bob
+    const hSpeed = Math.hypot(this.vel.x, this.vel.z);
+    const bobbing = this.onGround && !this.inWater && hSpeed > 1;
+    this.bobAmount += ((bobbing ? Math.min(1, hSpeed / 4) : 0) - this.bobAmount) * Math.min(1, dt * 8);
+    if (bobbing) this.bobPhase += dt * hSpeed * 1.6;
+    const bobY = -Math.abs(Math.cos(this.bobPhase)) * 0.055 * this.bobAmount;
+    const bobRoll = Math.sin(this.bobPhase) * 0.008 * this.bobAmount;
+
+    this.camera.position.set(this.pos.x, this.pos.y + EYE_HEIGHT + bobY, this.pos.z);
+    this.camera.rotation.set(this.pitch, this.yaw, bobRoll, 'YXZ');
 
     // sprint FOV kick
     const targetFov = this.sprinting ? 82 : 75;
@@ -270,7 +283,7 @@ export class Player {
     let t = 0;
     while (t <= REACH) {
       const b = this.world.getBlock(x, y, z);
-      if (b !== B.AIR && b !== B.WATER) {
+      if (b !== B.AIR && !isWater(b)) {
         return { block: [x, y, z], prev: [px, py, pz], id: b, dist: t };
       }
       px = x; py = y; pz = z;
@@ -281,16 +294,25 @@ export class Player {
     return null;
   }
 
+  // True when the held tool is too weak for this block: it will still break
+  // (slowly), but drops nothing - same as Minecraft.
+  underTier(blockId, inventory) {
+    const def = BLOCKS[blockId];
+    if (!def || !def.minTier) return false;
+    const held = inventory.heldItem();
+    const tool = held && ITEMS[held.id];
+    const matches = def.tool && tool && tool.tool === def.tool;
+    return (matches ? tool.tier || 0 : 0) < def.minTier;
+  }
+
   mineSpeedFor(blockId, inventory) {
     const def = BLOCKS[blockId];
     if (!def || def.hardness === Infinity) return 0;
     const held = inventory.heldItem();
     const tool = held && ITEMS[held.id];
     const matches = def.tool && tool && tool.tool === def.tool;
-    // tier gating: stone-family blocks need a good enough pickaxe
-    if (def.minTier) {
-      const heldTier = matches ? (tool.tier || 0) : 0;
-      if (heldTier < def.minTier) return 0;
+    if (this.underTier(blockId, inventory)) {
+      return 1 / (def.hardness * 3.3); // heavy penalty, no drop
     }
     return (matches ? tool.speed : 1) / def.hardness;
   }
@@ -314,15 +336,32 @@ export class Player {
     }
     const speed = this.mineSpeedFor(hit.id, inventory);
     if (speed <= 0) return;
+    // periodic dig sound while chipping away
+    this.digTickTimer -= dt;
+    if (this.digTickTimer <= 0) {
+      this.digTickTimer = 0.22;
+      if (this.onDigTick) this.onDigTick(hit.id);
+    }
     this.mineProgress += speed * dt;
     if (this.mineProgress >= 1) {
       const def = BLOCKS[hit.id];
-      const drop = def.drops === undefined ? hit.id : def.drops;
+      let drop = def.drops === undefined ? hit.id : def.drops;
+      if (this.underTier(hit.id, inventory)) drop = null;
       if (drop !== null) {
         if (this.onBlockMined) this.onBlockMined(drop, x + 0.5, y + 0.4, z + 0.5, hit.id, x, y, z);
         else inventory.add(drop, 1);
       }
       this.world.setBlock(x, y, z, B.AIR);
+      // plants sitting on the broken block pop off with it
+      const above = this.world.getBlock(x, y + 1, z);
+      const aboveDef = BLOCKS[above];
+      if (aboveDef && aboveDef.cross) {
+        const plantDrop = aboveDef.drops === undefined ? above : aboveDef.drops;
+        if (plantDrop !== null && this.onBlockMined) {
+          this.onBlockMined(plantDrop, x + 0.5, y + 1.3, z + 0.5, above, x, y + 1, z);
+        }
+        this.world.setBlock(x, y + 1, z, B.AIR);
+      }
       this.mineTarget = null;
       this.mineProgress = 0;
     }
@@ -350,6 +389,7 @@ export class Player {
         inventory.consumeHeld(1);
         this.placeCooldown = 0.6;
         this.justPlaced = true; // reuse the hand swing as eating feedback
+        this.justAte = true;
       }
       return;
     }
@@ -357,10 +397,20 @@ export class Player {
     const hit = this.raycast();
     if (!hit) return;
     if (!sel || sel.count <= 0) return;
-    const [x, y, z] = hit.prev;
+    // placing into a plant replaces it, like MC tall grass
+    let [x, y, z] = hit.prev;
+    const hitDef = BLOCKS[hit.id];
+    if (hitDef && hitDef.cross) [x, y, z] = hit.block;
     if (y < 1 || y >= HEIGHT) return;
     const cur = this.world.getBlock(x, y, z);
-    if (cur !== B.AIR && cur !== B.WATER) return;
+    const curDef = BLOCKS[cur];
+    if (cur !== B.AIR && !isWater(cur) && !(curDef && curDef.cross)) return;
+
+    // plants can only be planted on grass or dirt
+    if (BLOCKS[sel.id].cross) {
+      const below = this.world.getBlock(x, y - 1, z);
+      if (below !== B.GRASS && below !== B.DIRT) return;
+    }
 
     // don't place inside self
     const hw = PLAYER_W / 2;
@@ -372,5 +422,6 @@ export class Player {
     inventory.consumeHeld(1);
     this.placeCooldown = 0.22;
     this.justPlaced = true;
+    this.lastPlacedId = sel.id;
   }
 }

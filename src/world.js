@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { Noise2D, Noise3D, hash2, hash3 } from './noise.js';
-import { B, BLOCKS, isOpaque, isSolid } from './blocks.js';
+import { B, BLOCKS, isOpaque, isSolid, isWater, waterLevel, flowId } from './blocks.js';
 import { tileUV } from './textures.js';
 
 export const CHUNK = 16;
@@ -18,7 +18,7 @@ export class World {
     this.scene = scene;
     this.seed = seed;
     this.chunks = new Map();      // key -> { data, mesh, waterMesh, dirty }
-    this.renderDistance = 6;
+    this.renderDistance = 8;
 
     this.heightNoise = new Noise2D(seed);
     this.hillNoise = new Noise2D(seed ^ 0x9e3779b9);
@@ -39,6 +39,7 @@ export class World {
     });
 
     this.meshQueue = [];
+    this.waterQueue = new Set(); // cells to re-evaluate, seeded by block edits
   }
 
   // ---------- terrain ----------
@@ -99,7 +100,27 @@ export class World {
     }
 
     this.plantTrees(cx, cz, data, heights);
+    this.plantFlora(cx, cz, data, heights);
     return data;
+  }
+
+  // tall grass and flowers scattered on open grass blocks
+  plantFlora(cx, cz, data, heights) {
+    for (let z = 0; z < CHUNK; z++) {
+      for (let x = 0; x < CHUNK; x++) {
+        const h = heights[x + z * CHUNK];
+        if (h <= SEA_LEVEL + 1 || h >= HEIGHT - 2) continue;
+        if (data[idx(x, h, z)] !== B.GRASS) continue;
+        if (data[idx(x, h + 1, z)] !== B.AIR) continue;
+        const wx = cx * CHUNK + x, wz = cz * CHUNK + z;
+        const r = hash2(wx, wz, this.seed ^ 0xf10a);
+        if (r < 0.09) {
+          data[idx(x, h + 1, z)] = B.TALL_GRASS;
+        } else if (r < 0.105) {
+          data[idx(x, h + 1, z)] = hash2(wx, wz, this.seed ^ 0xf10b) < 0.5 ? B.FLOWER_YELLOW : B.FLOWER_RED;
+        }
+      }
+    }
   }
 
   oreAt(wx, y, wz) {
@@ -112,6 +133,15 @@ export class World {
     return 0;
   }
 
+  // Forest patches: dense clusters of trees where the forest noise is high,
+  // occasional lone trees elsewhere (feels like MC plains vs forest biomes).
+  treeDensity(wx, wz) {
+    const f = this.hillNoise.sample(wx * 0.012 + 77.7, wz * 0.012 + 77.7);
+    if (f > 0.68) return 0.045; // deep forest
+    if (f > 0.58) return 0.018; // forest edge
+    return 0.003;               // scattered plains trees
+  }
+
   // Trees are deterministic per world column, so chunks can independently
   // write the parts of border-crossing trees that fall inside them.
   plantTrees(cx, cz, data, heights) {
@@ -119,7 +149,7 @@ export class World {
     for (let z = -MARGIN; z < CHUNK + MARGIN; z++) {
       for (let x = -MARGIN; x < CHUNK + MARGIN; x++) {
         const wx = cx * CHUNK + x, wz = cz * CHUNK + z;
-        if (hash2(wx, wz, this.seed ^ 0x7ee5) > 0.006) continue;
+        if (hash2(wx, wz, this.seed ^ 0x7ee5) > this.treeDensity(wx, wz)) continue;
 
         const inChunk = x >= 0 && x < CHUNK && z >= 0 && z < CHUNK;
         const h = inChunk ? heights[x + z * CHUNK] : this.surfaceHeight(wx, wz);
@@ -185,6 +215,100 @@ export class World {
     if (lx === CHUNK - 1) this.markDirty(cx + 1, cz);
     if (lz === 0) this.markDirty(cx, cz - 1);
     if (lz === CHUNK - 1) this.markDirty(cx, cz + 1);
+    this.scheduleWaterAround(wx, wy, wz);
+  }
+
+  // ---------- water flow ----------
+  // Oceans stay quiet until an edit wakes cells near them; from then on the
+  // local rules relax until stable: water falls into air below, spreads
+  // sideways with decreasing level when grounded, and dries when cut off.
+
+  scheduleWaterAround(x, y, z) {
+    this.waterQueue.add(x + ',' + y + ',' + z);
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      this.waterQueue.add((x + dx) + ',' + (y + dy) + ',' + (z + dz));
+    }
+  }
+
+  // can this cell be flooded? (air and plants wash away)
+  floodable(id) {
+    if (id === B.AIR) return true;
+    const def = BLOCKS[id];
+    return !!(def && def.cross);
+  }
+
+  tickWater(budget = 240) {
+    if (!this.waterQueue.size) return;
+    const batch = [];
+    for (const k of this.waterQueue) {
+      batch.push(k);
+      if (batch.length >= budget) break;
+    }
+    for (const k of batch) {
+      this.waterQueue.delete(k);
+      const [x, y, z] = k.split(',').map(Number);
+      this.updateWaterCell(x, y, z);
+    }
+  }
+
+  updateWaterCell(x, y, z) {
+    if (y < 1 || y >= HEIGHT) return;
+    const id = this.getBlock(x, y, z);
+    const lvl = waterLevel(id);
+
+    if (lvl === 0) {
+      if (!this.floodable(id)) return;
+      // empty cell: does water want to flow in?
+      const desired = this.desiredLevel(x, y, z);
+      if (desired > 0) this.setBlock(x, y, z, flowId(desired));
+      return;
+    }
+
+    if (lvl < 8) {
+      // flowing water re-derives its level from neighbors; dries if cut off
+      const desired = this.desiredLevel(x, y, z);
+      if (desired !== lvl) {
+        this.setBlock(x, y, z, desired <= 0 ? B.AIR : flowId(desired));
+        return;
+      }
+    }
+
+    // stable water pushes outward
+    this.spreadFrom(x, y, z, lvl);
+  }
+
+  // what level should this (non-source) cell have, from its neighbors?
+  desiredLevel(x, y, z) {
+    if (waterLevel(this.getBlock(x, y + 1, z)) > 0) return 7; // fed from above
+    let best = 0;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nb = this.getBlock(x + dx, y, z + dz);
+      const nl = waterLevel(nb);
+      if (nl < 2) continue;
+      // a neighbor only donates sideways if it can't fall itself
+      const nbBelow = this.getBlock(x + dx, y - 1, z + dz);
+      if (this.floodable(nbBelow)) continue;
+      best = Math.max(best, nl);
+    }
+    return best - 1;
+  }
+
+  spreadFrom(x, y, z, lvl) {
+    const below = this.getBlock(x, y - 1, z);
+    if (this.floodable(below)) {
+      this.setBlock(x, y - 1, z, flowId(7));
+      return;
+    }
+    const grounded = isSolid(below) || waterLevel(below) > 0;
+    if (!grounded || lvl < 2) return;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      const target = this.getBlock(nx, y, nz);
+      const tl = waterLevel(target);
+      if (this.floodable(target) || (tl > 0 && tl < lvl - 1 && target !== B.WATER)) {
+        this.setBlock(nx, y, nz, flowId(lvl - 1));
+      }
+    }
   }
 
   markDirty(cx, cz) {
@@ -264,24 +388,67 @@ export class World {
       return 1 - n * 0.18;
     };
 
+    // two crossed diagonal quads for plants, drawn double-sided via two windings
+    const emitCross = (x, y, z, def) => {
+      const [u0, v0, u1, v1] = tileUV(def.tiles.side);
+      const quads = [
+        [[0.15, 0.15], [0.85, 0.85]],
+        [[0.15, 0.85], [0.85, 0.15]],
+      ];
+      for (const [[ax, az], [bx, bz]] of quads) {
+        for (const flip of [false, true]) {
+          const vi = opaque.pos.length / 3;
+          const corners = flip
+            ? [[bx, 0, bz], [ax, 0, az], [ax, 1, az], [bx, 1, bz]]
+            : [[ax, 0, az], [bx, 0, bz], [bx, 1, bz], [ax, 1, az]];
+          const uvs = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+          for (let i = 0; i < 4; i++) {
+            opaque.pos.push(x + corners[i][0], y + corners[i][1], z + corners[i][2]);
+            opaque.norm.push(0, 1, 0);
+            opaque.uv.push(uvs[i][0], uvs[i][1]);
+            opaque.col.push(0.95, 0.95, 0.95);
+          }
+          opaque.index.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+        }
+      }
+    };
+
     for (let y = 0; y < HEIGHT; y++) {
       for (let z = 0; z < CHUNK; z++) {
         for (let x = 0; x < CHUNK; x++) {
           const b = c.data[idx(x, y, z)];
           if (b === B.AIR) continue;
           const def = BLOCKS[b];
-          const isWater = b === B.WATER;
-          const buf = isWater ? water : opaque;
+          if (def.cross) {
+            emitCross(x, y, z, def);
+            continue;
+          }
+          const bIsWater = !!def.water;
+          const buf = bIsWater ? water : opaque;
+          // surface height: sources sit at 0.875, flowing water lower per level
+          const lvl = waterLevel(b);
+          const surfaceY = lvl === 8 ? 0.875 : 0.125 + lvl * 0.105;
 
           for (const face of FACES) {
             const nb = get(x + face.dir[0], y + face.dir[1], z + face.dir[2]);
-            if (isWater) {
-              // water renders against air and see-through blocks (glass)
-              if (nb === B.WATER || isOpaque(nb)) continue;
+            let sideBottom = 0; // for partial water-water step faces
+            if (bIsWater) {
+              if (isWater(nb)) {
+                // step face between two waters of different surface heights
+                if (face.dir[1] !== 0) continue;
+                const ownTop = isWater(get(x, y + 1, z)) ? 1 : surfaceY;
+                const nl = waterLevel(nb);
+                const nbTop = isWater(get(x + face.dir[0], y + 1, z + face.dir[2]))
+                  ? 1 : (nl === 8 ? 0.875 : 0.125 + nl * 0.105);
+                if (ownTop <= nbTop + 0.01) continue;
+                sideBottom = nbTop;
+              } else if (isOpaque(nb)) {
+                continue; // buried face
+              }
             } else {
               if (isOpaque(nb)) continue;
               if (nb === b) continue; // no faces between two glass blocks
-              if (nb === B.WATER && b === B.WATER) continue;
+              if (isWater(nb) && bIsWater) continue;
             }
 
             const tileIdx = def.tiles[face.tile];
@@ -292,12 +459,12 @@ export class World {
             for (let i = 0; i < 4; i++) {
               const [ox, oy, oz] = face.corners[i];
               let vy = y + oy;
-              // lower water surface slightly, MC-style
-              if (isWater && oy === 1 && get(x, y + 1, z) !== B.WATER) vy = y + 0.875;
+              if (bIsWater && oy === 1 && !isWater(get(x, y + 1, z))) vy = y + surfaceY;
+              if (bIsWater && oy === 0 && sideBottom > 0) vy = y + sideBottom;
               buf.pos.push(x + ox, vy, z + oz);
               buf.norm.push(...face.dir);
               buf.uv.push(uvs[i][0], uvs[i][1]);
-              const ao = isWater ? 1 : aoFor(x, y, z, face.corners[i], face.dir);
+              const ao = bIsWater ? 1 : aoFor(x, y, z, face.corners[i], face.dir);
               const l = face.shade * ao;
               buf.col.push(l, l, l);
             }
